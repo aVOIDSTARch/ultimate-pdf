@@ -1,0 +1,14 @@
+[package]
+name = "ultimate-pdf"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+resolver = "3"
+members = [
+  "apple-vision-image-text-extractor",
+  "updf-api",
+  "updf-pdf-to-image-set"
+]
+
+[dependencies]

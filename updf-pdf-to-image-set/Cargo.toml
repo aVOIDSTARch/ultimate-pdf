@@ -1,0 +1,7 @@
+[package]
+name = "updf-pdf-to-image-set"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+fop-pdf-renderer = "0.1.2"
