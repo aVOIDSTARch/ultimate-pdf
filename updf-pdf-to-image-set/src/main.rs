@@ -1,6 +1,11 @@
 mod ghostscript;
 use ghostscript::{OutputDevice, RenderJob, render};
 
+mod directory;
+
+const base_input_dir: &str = "../books/unprocessed/";
+const base_output_dir: &str = "../books/processed/";
+
 fn main() {
     let job = RenderJob::new(
         "../books/unprocessed/alan-watts-essentials.pdf",
