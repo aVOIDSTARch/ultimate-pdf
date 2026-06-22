@@ -12,3 +12,16 @@ members = [
 ]
 
 [dependencies]
+# Stage crates — backing the shared `pipeline` library module.
+updf-pdf-to-image-set = { path = "updf-pdf-to-image-set" }
+apple-vision-image-text-extractor = { path = "apple-vision-image-text-extractor" }
+agent-text-cleanup = { path = "../agent-text-cleanup" }
+# Subprocess interface to the installed `agent-text-cleanup` CLI binary.
+updf-agent-cleanup = { path = "updf-agent-cleanup" }
+
+# Supervisor / control-plane binary.
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "signal", "time"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

@@ -7,7 +7,6 @@
 //   2  invalid usage (clap parse errors, or semantic validation here)
 
 mod cli;
-mod pipeline;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -17,6 +16,7 @@ use clap::Parser;
 use agent_text_cleanup::agent::{ClaudeClient, FormatTarget};
 use agent_text_cleanup::api::{CorrectionApi, load_target};
 use apple_vision_image_text_extractor::vision::OcrJob;
+use ultimate_pdf::pipeline;
 use updf_pdf_to_image_set::convert::{ConvertOptions, convert_path};
 
 use cli::{
