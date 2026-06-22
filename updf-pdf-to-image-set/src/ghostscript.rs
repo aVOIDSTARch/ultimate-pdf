@@ -22,6 +22,28 @@ impl OutputDevice {
             Self::Tiff24nc => "tiff24nc",
         }
     }
+
+    /// File extension to use for the rendered images of this device.
+    pub fn file_extension(&self) -> &'static str {
+        match self {
+            Self::Png16m | Self::PngGray | Self::PngMono => "png",
+            Self::Jpeg     => "jpg",
+            Self::Tiff24nc => "tiff",
+        }
+    }
+
+    /// Parse a device from a user-supplied name (e.g. a CLI flag). Case-insensitive,
+    /// accepts the common aliases `jpg`/`tiff`.
+    pub fn parse(name: &str) -> Option<Self> {
+        match name.to_ascii_lowercase().as_str() {
+            "png16m"          => Some(Self::Png16m),
+            "pnggray"         => Some(Self::PngGray),
+            "pngmono"         => Some(Self::PngMono),
+            "jpeg" | "jpg"    => Some(Self::Jpeg),
+            "tiff24nc" | "tiff" => Some(Self::Tiff24nc),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
