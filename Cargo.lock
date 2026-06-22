@@ -1500,6 +1500,9 @@ name = "updf-agent-cleanup"
 version = "0.1.0"
 dependencies = [
  "agent-text-cleanup",
+ "clap",
+ "dotenvy",
+ "tokio",
 ]
 
 [[package]]
@@ -1513,7 +1516,11 @@ dependencies = [
 name = "updf-cli"
 version = "0.1.0"
 dependencies = [
+ "agent-text-cleanup",
+ "apple-vision-image-text-extractor",
  "clap",
+ "dotenvy",
+ "tokio",
  "updf-pdf-to-image-set",
 ]
 

@@ -9,4 +9,8 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+dotenvy = "0.15"
 updf-pdf-to-image-set = { path = "../updf-pdf-to-image-set" }
+apple-vision-image-text-extractor = { path = "../apple-vision-image-text-extractor" }
+agent-text-cleanup = { path = "../../agent-text-cleanup" }

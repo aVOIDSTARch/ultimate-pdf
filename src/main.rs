@@ -1,3 +1,2 @@
-fn main() {
-    println!("Hello, world!");
-}
+// Primary project entry point
+
