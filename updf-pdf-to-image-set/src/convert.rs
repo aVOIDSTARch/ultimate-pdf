@@ -1,8 +1,10 @@
 // Path/batch orchestration on top of the Ghostscript renderer.
 //
-// Takes a single PDF or a directory of PDFs and renders each into its own output
-// directory (named after the PDF), one image per page (`page-1.png`, `page-2.png`, …),
-// via the `gs`-backed `render()` in `ghostscript.rs`.
+// Takes a single PDF or a directory of PDFs and renders each into a nested output
+// directory `<output_base>/<author>/<title>/`, one image per page (`page-1.png`,
+// `page-2.png`, …), via the `gs`-backed `render()` in `ghostscript.rs`. The
+// author/title split comes from the `<title>-<author>.pdf` naming convention; see
+// [`book_subdir`].
 
 use std::path::{Path, PathBuf};
 
@@ -85,8 +87,26 @@ pub struct PdfOutcome {
     pub result: Result<PathBuf, ConvertError>,
 }
 
-/// Render a single PDF into `<output_base>/<pdf_stem>/page-N.<ext>`, creating the
-/// directory if needed. Returns the directory that was populated.
+/// Build the nested output subpath for a book PDF, from the `<title>-<author>`
+/// filename convention: the part after the last `-` is the author, the rest is the
+/// title, giving `<author>/<title>`. This matches the existing
+/// `processed/<author>/<work>/` layout, so multiple works by one author reuse the
+/// same author directory. PDFs without a `-` separator fall back to a single
+/// `<stem>` directory.
+fn book_subdir(stem: &str) -> PathBuf {
+    if let Some((title, author)) = stem.rsplit_once('-') {
+        let title = title.trim();
+        let author = author.trim();
+        if !title.is_empty() && !author.is_empty() {
+            return Path::new(author).join(title);
+        }
+    }
+    PathBuf::from(stem.trim())
+}
+
+/// Render a single PDF into `<output_base>/<author>/<title>/page-N.<ext>`, creating
+/// the nested directories if needed (reusing any that already exist). Returns the
+/// directory that was populated.
 pub fn convert_pdf(
     pdf: &Path,
     output_base: &Path,
@@ -100,7 +120,7 @@ pub fn convert_pdf(
         .and_then(|s| s.to_str())
         .ok_or_else(|| ConvertError::NotFound(pdf.to_path_buf()))?;
 
-    let out_dir = output_base.join(stem);
+    let out_dir = output_base.join(book_subdir(stem));
     std::fs::create_dir_all(&out_dir)?;
 
     // gs expands `%d` to the (1-based) page number.
@@ -379,6 +399,55 @@ mod tests {
         }
         assert!(out_base.join("alpha/page-1.png").is_file());
         assert!(out_base.join("beta/page-1.png").is_file());
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn book_subdir_splits_title_and_author() {
+        assert_eq!(
+            book_subdir("Abstraction-Liskov_B_Guttag_John"),
+            PathBuf::from("Liskov_B_Guttag_John/Abstraction")
+        );
+        // Only the last `-` separates author from title.
+        assert_eq!(
+            book_subdir("About_Time-Narrative-MarkCurrie"),
+            PathBuf::from("MarkCurrie/About_Time-Narrative")
+        );
+    }
+
+    #[test]
+    fn book_subdir_falls_back_without_separator() {
+        assert_eq!(book_subdir("doc"), PathBuf::from("doc"));
+        // A dangling separator (empty title or author) also falls back to the stem.
+        assert_eq!(book_subdir("-author"), PathBuf::from("-author"));
+        assert_eq!(book_subdir("title-"), PathBuf::from("title-"));
+    }
+
+    #[test]
+    fn nested_layout_groups_by_author() {
+        if !gs_available() {
+            eprintln!("SKIP: gs not installed");
+            return;
+        }
+        let base = scratch("nested");
+        let in_dir = base.join("in");
+        let out_base = base.join("out");
+        std::fs::create_dir_all(&in_dir).unwrap();
+        // Two works by the same author should share one author directory.
+        write_fixture_pdf(&in_dir.join("WorkOne-SameAuthor.pdf"), 1);
+        write_fixture_pdf(&in_dir.join("WorkTwo-SameAuthor.pdf"), 1);
+
+        let opts = ConvertOptions {
+            first_page: Some(1),
+            last_page: Some(1),
+            ..Default::default()
+        };
+        convert_path(&in_dir, &out_base, &opts).expect("batch should run");
+
+        assert!(out_base.join("SameAuthor/WorkOne/page-1.png").is_file());
+        assert!(out_base.join("SameAuthor/WorkTwo/page-1.png").is_file());
+        assert!(out_base.join("SameAuthor").is_dir());
 
         let _ = std::fs::remove_dir_all(&base);
     }
