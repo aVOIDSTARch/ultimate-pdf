@@ -216,50 +216,64 @@ mod tests {
             .unwrap_or(false)
     }
 
-    /// A real PDF to render, if one is present in the repo. Tests skip when absent.
-    fn sample_pdf() -> Option<PathBuf> {
-        [
-            concat!(env!("CARGO_MANIFEST_DIR"), "/repaired.pdf"),
-            concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../AlanWatts-EssentialAlanWatts(AlanWatts)(Z-Library) 2.pdf"
-            ),
-        ]
-        .into_iter()
-        .map(PathBuf::from)
-        .find(|p| p.is_file())
+    /// Build a minimal valid PDF with `pages` blank pages (each draws a filled rectangle).
+    /// Ghostscript reconstructs the cross-reference table, so we omit xref/trailer. This
+    /// keeps the tests self-contained — no reliance on sample files in the repo.
+    fn make_pdf_bytes(pages: usize) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(b"%PDF-1.4\n");
+        let kids: Vec<String> = (0..pages).map(|i| format!("{} 0 R", 3 + i)).collect();
+        out.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+        out.extend_from_slice(
+            format!(
+                "2 0 obj\n<< /Type /Pages /Kids [{}] /Count {} >>\nendobj\n",
+                kids.join(" "),
+                pages
+            )
+            .as_bytes(),
+        );
+        for i in 0..pages {
+            out.extend_from_slice(
+                format!(
+                    "{} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents {} 0 R >>\nendobj\n",
+                    3 + i,
+                    3 + pages + i
+                )
+                .as_bytes(),
+            );
+        }
+        for i in 0..pages {
+            let stream = b"0 0 100 100 re f";
+            out.extend_from_slice(
+                format!("{} 0 obj\n<< /Length {} >>\nstream\n", 3 + pages + i, stream.len())
+                    .as_bytes(),
+            );
+            out.extend_from_slice(stream);
+            out.extend_from_slice(b"\nendstream\nendobj\n");
+        }
+        out.extend_from_slice(b"%%EOF\n");
+        out
     }
 
-    #[test]
-    fn renders_first_page_of_real_pdf() {
-        if !gs_available() {
-            eprintln!("SKIP: gs not installed");
-            return;
-        }
-        let Some(pdf) = sample_pdf() else {
-            eprintln!("SKIP: no sample pdf in repo");
-            return;
-        };
+    /// Write a fixture PDF with `pages` pages and return its path.
+    fn write_fixture_pdf(path: &Path, pages: usize) -> PathBuf {
+        std::fs::write(path, make_pdf_bytes(pages)).unwrap();
+        path.to_path_buf()
+    }
 
-        let out_base =
-            std::env::temp_dir().join(format!("updf-render-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&out_base);
-
-        // Render only page 1 to keep the test fast.
-        let opts = ConvertOptions {
-            first_page: Some(1),
-            last_page: Some(1),
-            ..Default::default()
-        };
-        let out_dir = convert_pdf(&pdf, &out_base, &opts).expect("render should succeed");
-
-        // Output dir is named after the PDF stem and contains page-1.png.
-        assert_eq!(out_dir.file_name(), pdf.file_stem());
-        let page1 = out_dir.join("page-1.png");
-        let meta = std::fs::metadata(&page1).expect("page-1.png should exist");
-        assert!(meta.len() > 0, "page-1.png should be non-empty");
-
-        let _ = std::fs::remove_dir_all(&out_base);
+    /// A unique, freshly-empty scratch directory for a test.
+    fn scratch(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "updf-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
     }
 
     fn count_files(dir: &Path) -> usize {
@@ -269,18 +283,39 @@ mod tests {
     }
 
     #[test]
+    fn renders_single_page() {
+        if !gs_available() {
+            eprintln!("SKIP: gs not installed");
+            return;
+        }
+        let base = scratch("render");
+        let pdf = write_fixture_pdf(&base.join("doc.pdf"), 3);
+        let out_base = base.join("out");
+
+        let opts = ConvertOptions {
+            first_page: Some(1),
+            last_page: Some(1),
+            ..Default::default()
+        };
+        let out_dir = convert_pdf(&pdf, &out_base, &opts).expect("render should succeed");
+
+        // Output dir is named after the PDF stem and contains a non-empty page-1.png.
+        assert_eq!(out_dir.file_name(), pdf.file_stem());
+        let meta = std::fs::metadata(out_dir.join("page-1.png")).expect("page-1.png");
+        assert!(meta.len() > 0, "page-1.png should be non-empty");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
     fn page_range_produces_one_image_per_page() {
         if !gs_available() {
             eprintln!("SKIP: gs not installed");
             return;
         }
-        let Some(pdf) = sample_pdf() else {
-            eprintln!("SKIP: no sample pdf in repo");
-            return;
-        };
-
-        let out_base = std::env::temp_dir().join(format!("updf-range-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&out_base);
+        let base = scratch("range");
+        let pdf = write_fixture_pdf(&base.join("doc.pdf"), 5);
+        let out_base = base.join("out");
 
         let opts = ConvertOptions {
             first_page: Some(2),
@@ -294,7 +329,7 @@ mod tests {
         for n in 1..=3 {
             assert!(out_dir.join(format!("page-{n}.png")).is_file());
         }
-        let _ = std::fs::remove_dir_all(&out_base);
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -303,13 +338,9 @@ mod tests {
             eprintln!("SKIP: gs not installed");
             return;
         }
-        let Some(pdf) = sample_pdf() else {
-            eprintln!("SKIP: no sample pdf in repo");
-            return;
-        };
-
-        let out_base = std::env::temp_dir().join(format!("updf-jpeg-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&out_base);
+        let base = scratch("jpeg");
+        let pdf = write_fixture_pdf(&base.join("doc.pdf"), 2);
+        let out_base = base.join("out");
 
         let opts = ConvertOptions {
             device: OutputDevice::Jpeg,
@@ -319,7 +350,7 @@ mod tests {
         };
         let out_dir = convert_pdf(&pdf, &out_base, &opts).expect("render should succeed");
         assert!(out_dir.join("page-1.jpg").is_file(), "jpeg device should emit .jpg");
-        let _ = std::fs::remove_dir_all(&out_base);
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -328,18 +359,12 @@ mod tests {
             eprintln!("SKIP: gs not installed");
             return;
         }
-        let Some(pdf) = sample_pdf() else {
-            eprintln!("SKIP: no sample pdf in repo");
-            return;
-        };
-
-        let in_dir = std::env::temp_dir().join(format!("updf-batch-in-{}", std::process::id()));
-        let out_base = std::env::temp_dir().join(format!("updf-batch-out-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&in_dir);
-        let _ = std::fs::remove_dir_all(&out_base);
+        let base = scratch("batch");
+        let in_dir = base.join("in");
+        let out_base = base.join("out");
         std::fs::create_dir_all(&in_dir).unwrap();
-        std::fs::copy(&pdf, in_dir.join("alpha.pdf")).unwrap();
-        std::fs::copy(&pdf, in_dir.join("beta.pdf")).unwrap();
+        write_fixture_pdf(&in_dir.join("alpha.pdf"), 2);
+        write_fixture_pdf(&in_dir.join("beta.pdf"), 2);
 
         let opts = ConvertOptions {
             first_page: Some(1),
@@ -355,8 +380,7 @@ mod tests {
         assert!(out_base.join("alpha/page-1.png").is_file());
         assert!(out_base.join("beta/page-1.png").is_file());
 
-        let _ = std::fs::remove_dir_all(&in_dir);
-        let _ = std::fs::remove_dir_all(&out_base);
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
