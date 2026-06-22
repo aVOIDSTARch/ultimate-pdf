@@ -10,7 +10,6 @@
 //     OUTPUT  base directory for the per-PDF folders      (default: ../books/processed)
 
 mod ghostscript;
-mod directory;
 mod convert;
 
 use std::path::PathBuf;

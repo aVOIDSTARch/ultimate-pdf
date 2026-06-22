@@ -145,3 +145,48 @@ pub fn render(job: &RenderJob) -> Result<(), GhostscriptError> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_accepts_canonical_names_and_aliases() {
+        assert!(matches!(OutputDevice::parse("png16m"), Some(OutputDevice::Png16m)));
+        assert!(matches!(OutputDevice::parse("pnggray"), Some(OutputDevice::PngGray)));
+        assert!(matches!(OutputDevice::parse("pngmono"), Some(OutputDevice::PngMono)));
+        assert!(matches!(OutputDevice::parse("jpeg"), Some(OutputDevice::Jpeg)));
+        assert!(matches!(OutputDevice::parse("jpg"), Some(OutputDevice::Jpeg)));
+        assert!(matches!(OutputDevice::parse("tiff24nc"), Some(OutputDevice::Tiff24nc)));
+        assert!(matches!(OutputDevice::parse("tiff"), Some(OutputDevice::Tiff24nc)));
+    }
+
+    #[test]
+    fn parse_is_case_insensitive() {
+        assert!(matches!(OutputDevice::parse("PNG16M"), Some(OutputDevice::Png16m)));
+        assert!(matches!(OutputDevice::parse("JpEg"), Some(OutputDevice::Jpeg)));
+    }
+
+    #[test]
+    fn parse_rejects_unknown() {
+        assert!(OutputDevice::parse("").is_none());
+        assert!(OutputDevice::parse("bmp").is_none());
+        assert!(OutputDevice::parse("png").is_none());
+    }
+
+    #[test]
+    fn file_extension_matches_device() {
+        assert_eq!(OutputDevice::Png16m.file_extension(), "png");
+        assert_eq!(OutputDevice::PngGray.file_extension(), "png");
+        assert_eq!(OutputDevice::PngMono.file_extension(), "png");
+        assert_eq!(OutputDevice::Jpeg.file_extension(), "jpg");
+        assert_eq!(OutputDevice::Tiff24nc.file_extension(), "tiff");
+    }
+
+    #[test]
+    fn builder_sets_page_range() {
+        let job = RenderJob::new("in.pdf", "out/page-%d.png").pages(2, 5);
+        assert_eq!(job.first_page, Some(2));
+        assert_eq!(job.last_page, Some(5));
+    }
+}

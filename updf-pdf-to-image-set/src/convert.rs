@@ -262,6 +262,103 @@ mod tests {
         let _ = std::fs::remove_dir_all(&out_base);
     }
 
+    fn count_files(dir: &Path) -> usize {
+        std::fs::read_dir(dir)
+            .map(|rd| rd.filter_map(Result::ok).filter(|e| e.path().is_file()).count())
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn page_range_produces_one_image_per_page() {
+        if !gs_available() {
+            eprintln!("SKIP: gs not installed");
+            return;
+        }
+        let Some(pdf) = sample_pdf() else {
+            eprintln!("SKIP: no sample pdf in repo");
+            return;
+        };
+
+        let out_base = std::env::temp_dir().join(format!("updf-range-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&out_base);
+
+        let opts = ConvertOptions {
+            first_page: Some(2),
+            last_page: Some(4),
+            ..Default::default()
+        };
+        let out_dir = convert_pdf(&pdf, &out_base, &opts).expect("render should succeed");
+
+        // Three pages requested -> exactly three images, numbered from 1.
+        assert_eq!(count_files(&out_dir), 3, "expected one image per requested page");
+        for n in 1..=3 {
+            assert!(out_dir.join(format!("page-{n}.png")).is_file());
+        }
+        let _ = std::fs::remove_dir_all(&out_base);
+    }
+
+    #[test]
+    fn device_choice_controls_file_extension() {
+        if !gs_available() {
+            eprintln!("SKIP: gs not installed");
+            return;
+        }
+        let Some(pdf) = sample_pdf() else {
+            eprintln!("SKIP: no sample pdf in repo");
+            return;
+        };
+
+        let out_base = std::env::temp_dir().join(format!("updf-jpeg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&out_base);
+
+        let opts = ConvertOptions {
+            device: OutputDevice::Jpeg,
+            first_page: Some(1),
+            last_page: Some(1),
+            ..Default::default()
+        };
+        let out_dir = convert_pdf(&pdf, &out_base, &opts).expect("render should succeed");
+        assert!(out_dir.join("page-1.jpg").is_file(), "jpeg device should emit .jpg");
+        let _ = std::fs::remove_dir_all(&out_base);
+    }
+
+    #[test]
+    fn directory_batch_gives_each_pdf_its_own_folder() {
+        if !gs_available() {
+            eprintln!("SKIP: gs not installed");
+            return;
+        }
+        let Some(pdf) = sample_pdf() else {
+            eprintln!("SKIP: no sample pdf in repo");
+            return;
+        };
+
+        let in_dir = std::env::temp_dir().join(format!("updf-batch-in-{}", std::process::id()));
+        let out_base = std::env::temp_dir().join(format!("updf-batch-out-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&in_dir);
+        let _ = std::fs::remove_dir_all(&out_base);
+        std::fs::create_dir_all(&in_dir).unwrap();
+        std::fs::copy(&pdf, in_dir.join("alpha.pdf")).unwrap();
+        std::fs::copy(&pdf, in_dir.join("beta.pdf")).unwrap();
+
+        let opts = ConvertOptions {
+            first_page: Some(1),
+            last_page: Some(1),
+            ..Default::default()
+        };
+        let outcomes = convert_path(&in_dir, &out_base, &opts).expect("batch should run");
+
+        assert_eq!(outcomes.len(), 2, "one outcome per pdf");
+        for outcome in &outcomes {
+            assert!(outcome.result.is_ok(), "{:?} failed: {:?}", outcome.pdf, outcome.result);
+        }
+        assert!(out_base.join("alpha/page-1.png").is_file());
+        assert!(out_base.join("beta/page-1.png").is_file());
+
+        let _ = std::fs::remove_dir_all(&in_dir);
+        let _ = std::fs::remove_dir_all(&out_base);
+    }
+
     #[test]
     fn collect_pdfs_filters_and_sorts() {
         let dir = std::env::temp_dir().join(format!("updf-collect-{}", std::process::id()));
