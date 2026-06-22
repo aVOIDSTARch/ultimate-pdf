@@ -6,7 +6,7 @@ edition = "2024"
 [workspace]
 resolver = "3"
 members = [
-  "apple-vision-image-text-extractor",
+  "apple-vision-image-text-extractor", "updf-agent-cleanup",
   "updf-api", "updf-cli",
   "updf-pdf-to-image-set"
 ]
