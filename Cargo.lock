@@ -725,6 +725,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "updf-cli"
+version = "0.1.0"
+
+[[package]]
 name = "updf-pdf-to-image-set"
 version = "0.1.0"
 dependencies = [

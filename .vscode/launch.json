@@ -1,0 +1,24 @@
+{
+  "configurations": [
+    {
+      "type": "swift",
+      "request": "launch",
+      "args": [],
+      "cwd": "${workspaceFolder:ultimate-pdf}/apple-vision-image-text-extractor/swift",
+      "name": "Debug vision-ocr (apple-vision-image-text-extractor/swift)",
+      "target": "vision-ocr",
+      "configuration": "debug",
+      "preLaunchTask": "swift: Build Debug vision-ocr (apple-vision-image-text-extractor/swift)"
+    },
+    {
+      "type": "swift",
+      "request": "launch",
+      "args": [],
+      "cwd": "${workspaceFolder:ultimate-pdf}/apple-vision-image-text-extractor/swift",
+      "name": "Release vision-ocr (apple-vision-image-text-extractor/swift)",
+      "target": "vision-ocr",
+      "configuration": "release",
+      "preLaunchTask": "swift: Build Release vision-ocr (apple-vision-image-text-extractor/swift)"
+    }
+  ]
+}

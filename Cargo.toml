@@ -7,7 +7,7 @@ edition = "2024"
 resolver = "3"
 members = [
   "apple-vision-image-text-extractor",
-  "updf-api",
+  "updf-api", "updf-cli",
   "updf-pdf-to-image-set"
 ]
 
