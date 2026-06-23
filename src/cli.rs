@@ -10,10 +10,9 @@ use clap::{Args, Parser, Subcommand};
 use updf_pdf_to_image_set::ghostscript::OutputDevice;
 
 /// Defaults resolve relative to this crate so they work from any working directory.
-/// Both crates are siblings under the workspace root, so `../books` is the same target
-/// the converter used previously.
-pub const DEFAULT_INPUT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../books/unprocessed");
-pub const DEFAULT_OUTPUT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../books/processed");
+/// `books/` lives directly under the workspace root, which is this crate's manifest dir.
+pub const DEFAULT_INPUT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/books/unprocessed");
+pub const DEFAULT_OUTPUT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/books/processed");
 
 #[derive(Debug, Parser)]
 #[command(
@@ -25,6 +24,7 @@ pub const DEFAULT_OUTPUT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../books/
         end-to-end or one at a time:\n  \
         pdf -> page images (Ghostscript) -> OCR markdown (Apple Vision) -> \
         corrected markdown (Claude cleanup).\n\n\
+        `serve` exposes the same stages over HTTP; `health` polls a running server.\n\n\
         Run `updf <command> --help` for the options of any stage.",
     propagate_version = true,
     after_help = "EXAMPLES:\n  \
@@ -67,6 +67,33 @@ pub enum Command {
     /// For each PDF, writes <OUTPUT>/<stem>/page-N.<ext>, <OUTPUT>/<stem>/<stem>.ocr.md, and
     /// (with --correct) <OUTPUT>/<stem>/<stem>.md.
     Pipeline(PipelineArgs),
+
+    /// Serve the HTTP API: the same stages over POST endpoints, plus /health (in-process).
+    ///
+    /// Each endpoint spawns this same `updf` binary as a subprocess, so the CLI stays the
+    /// single source of truth. Runs until stopped with Ctrl-C.
+    Serve(ServeArgs),
+
+    /// Poll a running server's /health endpoint over HTTP and print the report.
+    Health(HealthArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ServeArgs {
+    /// Address the API server should bind to.
+    #[arg(long, default_value = "127.0.0.1:8787")]
+    pub addr: String,
+}
+
+#[derive(Debug, Args)]
+pub struct HealthArgs {
+    /// Base URL of a running server (the /health path is appended).
+    #[arg(long, default_value = "http://127.0.0.1:8787")]
+    pub url: String,
+
+    /// Request timeout in seconds.
+    #[arg(long, default_value_t = 5)]
+    pub timeout: u64,
 }
 
 #[derive(Debug, Args)]

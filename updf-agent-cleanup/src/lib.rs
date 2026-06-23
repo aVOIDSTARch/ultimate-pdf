@@ -3,7 +3,7 @@
 //! `agent-text-cleanup` is installed as its own binary on this system. Rather than
 //! linking its library, this crate treats it as an external command and provides a
 //! typed, ergonomic Rust surface over its subcommands so the rest of the project can
-//! call it easily (mirroring how `updf-api` shells out to `updf`):
+//! call it easily (mirroring how `updf serve` shells out to `updf`):
 //!
 //! ```no_run
 //! use updf_agent_cleanup::{AgentTextCleanup, Correct, Normalize};

@@ -1,9 +1,10 @@
-//! HTTP surface over the `updf` command-line tool.
+//! HTTP surface over the `updf` command-line tool (the `updf serve` subcommand).
 //!
 //! By design this is a *surface for the CLI*, not a second implementation: every
 //! endpoint spawns the `updf` binary as a subprocess and returns its stdout /
-//! stderr / exit status as JSON. That keeps one source of truth (the CLI) and
-//! lets the API be driven, supervised, and health-checked remotely.
+//! stderr / exit status as JSON. Since `updf` is now the only binary, the server
+//! simply spawns itself — one source of truth (the CLI), drivable and
+//! health-checked remotely.
 //!
 //! Endpoints:
 //! * `GET  /`               — service info and the endpoint list.
@@ -27,29 +28,13 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
-/// Server configuration, resolved from the environment.
+/// Server configuration for `updf serve`.
 #[derive(Debug, Clone)]
 pub struct Config {
     /// Address to bind the HTTP server to.
     pub addr: SocketAddr,
-    /// Path to the `updf` CLI binary this API surfaces.
+    /// Path to the `updf` CLI binary this API surfaces (normally this binary itself).
     pub updf_bin: PathBuf,
-}
-
-impl Config {
-    /// Read configuration from the environment:
-    /// * `UPDF_API_ADDR` — bind address (default `127.0.0.1:8787`).
-    /// * `UPDF_BIN`      — path to the `updf` binary (default: next to this exe, else `updf`).
-    pub fn from_env() -> Self {
-        let addr = std::env::var("UPDF_API_ADDR")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 8787)));
-        Self {
-            addr,
-            updf_bin: resolve_updf_bin(),
-        }
-    }
 }
 
 /// Locate the `updf` binary: `UPDF_BIN`, else a sibling of the current exe, else `updf` on PATH.
@@ -109,7 +94,7 @@ struct Index {
 
 async fn index() -> Json<Index> {
     Json(Index {
-        service: "updf-api",
+        service: "updf",
         description: "HTTP surface over the updf CLI",
         endpoints: vec![
             "GET /health",

@@ -354,7 +354,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1506,7 +1506,9 @@ version = "0.1.0"
 dependencies = [
  "agent-text-cleanup",
  "apple-vision-image-text-extractor",
+ "axum",
  "clap",
+ "dotenvy",
  "reqwest",
  "serde",
  "serde_json",
@@ -1530,29 +1532,6 @@ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 [[package]]
 name = "updf-agent-cleanup"
 version = "0.1.0"
-
-[[package]]
-name = "updf-api"
-version = "0.1.0"
-dependencies = [
- "axum",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "updf-cli"
-version = "0.1.0"
-dependencies = [
- "agent-text-cleanup",
- "apple-vision-image-text-extractor",
- "clap",
- "dotenvy",
- "tokio",
- "ultimate-pdf",
- "updf-pdf-to-image-set",
-]
 
 [[package]]
 name = "updf-pdf-to-image-set"

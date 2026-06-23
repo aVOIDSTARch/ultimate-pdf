@@ -3,9 +3,9 @@
 //! This is the project's "main" crate. It owns the cross-stage [`pipeline`]
 //! orchestration (PDF → page images → OCR markdown → corrected markdown) and
 //! re-exports each stage crate so callers can reach everything through one
-//! dependency. The `ultimate-pdf` binary (see `main.rs`) is the supervisor /
-//! control plane that launches the system and reports its health; the `updf`
-//! CLI drives this `pipeline` module for the actual work.
+//! dependency. The single `updf` binary (see `main.rs`) drives this `pipeline`
+//! module for the actual work, and also hosts the HTTP API (`serve`) and its
+//! health probe (`health`).
 
 pub mod pipeline;
 

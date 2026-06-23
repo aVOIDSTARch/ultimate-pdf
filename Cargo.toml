@@ -7,9 +7,14 @@ edition = "2024"
 resolver = "3"
 members = [
   "apple-vision-image-text-extractor", "updf-agent-cleanup",
-  "updf-api", "updf-cli",
   "updf-pdf-to-image-set"
 ]
+
+# The one and only binary: `updf` does the work (pdf-to-images, ocr, correct,
+# pipeline) and hosts the HTTP API (serve) and its health probe (health).
+[[bin]]
+name = "updf"
+path = "src/main.rs"
 
 [dependencies]
 # Stage crates — backing the shared `pipeline` library module.
@@ -19,9 +24,13 @@ agent-text-cleanup = { path = "../agent-text-cleanup" }
 # Subprocess interface to the installed `agent-text-cleanup` CLI binary.
 updf-agent-cleanup = { path = "updf-agent-cleanup" }
 
-# Supervisor / control-plane binary.
+# The `updf` binary: CLI parsing, async runtime, the in-process HTTP API, and the
+# health probe that polls a running server.
 clap = { version = "4", features = ["derive"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "signal", "time"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "signal", "time", "net"] }
+axum = "0.8.9"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Load ANTHROPIC_API_KEY (and friends) from a local .env when present.
+dotenvy = "0.15"

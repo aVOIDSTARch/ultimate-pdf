@@ -1,169 +1,314 @@
-//! `ultimate-pdf` — the system supervisor and control plane.
-//!
-//! This binary initializes and controls the whole project. `serve` launches the
-//! `updf-api` HTTP server (which is itself a surface over the `updf` CLI) and
-//! supervises it, restarting it if it crashes. `health` polls a running system's
-//! `/health` endpoint over HTTP so the system's health can be checked remotely.
-//!
-//! The functional crates are each their own binary; the supervisor locates them
-//! next to itself in the build output and wires them together via environment
-//! variables (`UPDF_API_ADDR`, `UPDF_BIN`).
+// updf — the single binary for the Ultimate PDF toolkit.
+//
+// It does the work in-process (pdf-to-images, ocr, correct, pipeline), hosts the
+// HTTP API (serve), and probes a running server (health). Argument parsing lives in
+// `cli`, stage orchestration in `pipeline` (the umbrella lib), and the HTTP surface
+// in `server`. Subcommands map onto process exit codes:
+//   0  success
+//   1  a stage failed at runtime
+//   2  invalid usage (clap parse errors, or semantic validation here)
 
-use std::path::PathBuf;
+mod cli;
+mod server;
+
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use clap::{Args, Parser, Subcommand};
-use tokio::process::Command;
+use clap::Parser;
 
-#[derive(Debug, Parser)]
-#[command(
-    name = "ultimate-pdf",
-    version,
-    about = "Supervisor & control plane for the Ultimate PDF system",
-    long_about = "Initializes and controls the Ultimate PDF system.\n\n\
-        `serve` launches and supervises the updf-api HTTP server (a surface over the \
-        `updf` CLI); `health` polls a running system's /health endpoint so the system \
-        can be monitored remotely.",
-    propagate_version = true
-)]
-struct Cli {
-    #[command(subcommand)]
-    command: Option<Command_>,
-}
+use agent_text_cleanup::agent::{ClaudeClient, FormatTarget};
+use agent_text_cleanup::api::{CorrectionApi, load_target};
+use apple_vision_image_text_extractor::vision::OcrJob;
+use ultimate_pdf::pipeline;
+use updf_pdf_to_image_set::convert::{ConvertOptions, convert_path};
 
-#[derive(Debug, Subcommand)]
-enum Command_ {
-    /// Start the system: launch and supervise the updf-api server (default).
-    Serve(ServeArgs),
-    /// Poll a running system's /health endpoint and print the report.
-    Health(HealthArgs),
-}
-
-#[derive(Debug, Args)]
-struct ServeArgs {
-    /// Address the API server should bind to.
-    #[arg(long, default_value = "127.0.0.1:8787")]
-    addr: String,
-
-    /// Give up after this many rapid (<5s) restarts of the API process.
-    #[arg(long, default_value_t = 5)]
-    max_restarts: u32,
-}
-
-#[derive(Debug, Args)]
-struct HealthArgs {
-    /// Base URL of a running system (the /health path is appended).
-    #[arg(long, default_value = "http://127.0.0.1:8787")]
-    url: String,
-
-    /// Request timeout in seconds.
-    #[arg(long, default_value_t = 5)]
-    timeout: u64,
-}
+use cli::{
+    Cli, Command, CorrectArgs, CorrectOptions, HealthArgs, OcrArgs, OcrOptions, PdfToImagesArgs,
+    PipelineArgs, ServeArgs,
+};
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    // Pick up ANTHROPIC_API_KEY (and anything else) from a local .env if present.
+    let _ = dotenvy::dotenv();
+
     let cli = Cli::parse();
-    match cli.command.unwrap_or(Command_::Serve(ServeArgs {
-        addr: "127.0.0.1:8787".to_string(),
-        max_restarts: 5,
-    })) {
-        Command_::Serve(args) => serve(args).await,
-        Command_::Health(args) => health(args).await,
+    match cli.command {
+        Command::PdfToImages(args) => run_pdf_to_images(args),
+        Command::Ocr(args) => run_ocr_cmd(args),
+        Command::Correct(args) => run_correct_cmd(args).await,
+        Command::Pipeline(args) => run_pipeline(args).await,
+        Command::Serve(args) => serve(args).await,
+        Command::Health(args) => health(args).await,
     }
 }
 
-/// Resolve a sibling binary in the same directory as this executable.
-fn sibling_bin(name: &str) -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join(name)))
-        .unwrap_or_else(|| PathBuf::from(name))
-}
-
 // ---------------------------------------------------------------------------
-// serve — launch and supervise the API process
+// pdf-to-images
 // ---------------------------------------------------------------------------
 
-async fn serve(args: ServeArgs) -> ExitCode {
-    let api_bin = sibling_bin("updf-api");
-    let updf_bin = sibling_bin("updf");
-
-    if !api_bin.exists() {
-        eprintln!(
-            "error: updf-api binary not found at {} — run `cargo build` first",
-            api_bin.display()
-        );
-        return ExitCode::FAILURE;
+fn run_pdf_to_images(args: PdfToImagesArgs) -> ExitCode {
+    if let Some(code) = reject_inverted_range(args.first, args.last) {
+        return code;
     }
 
-    println!("ultimate-pdf supervisor");
-    println!("  api binary : {}", api_bin.display());
-    println!("  updf binary: {}", updf_bin.display());
-    println!("  bind addr  : {}", args.addr);
-    println!("  health     : http://{}/health", args.addr);
-    println!("  (press Ctrl-C to shut down)\n");
+    let options = ConvertOptions {
+        device: args.device,
+        dpi: args.dpi,
+        first_page: args.first,
+        last_page: args.last,
+    };
 
-    let mut rapid_restarts = 0u32;
+    println!(
+        "Rendering {} -> {} (device: {}, {} dpi)",
+        args.input.display(),
+        args.output.display(),
+        options.device.file_extension(),
+        options.dpi,
+    );
 
-    loop {
-        let started = Instant::now();
+    let outcomes = match convert_path(&args.input, &args.output, &options) {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
 
-        let mut child = match Command::new(&api_bin)
-            .env("UPDF_API_ADDR", &args.addr)
-            .env("UPDF_BIN", &updf_bin)
-            .spawn()
-        {
-            Ok(child) => child,
+    let mut failures = 0;
+    for outcome in &outcomes {
+        let name = pdf_label(&outcome.pdf);
+        match &outcome.result {
+            Ok(dir) => println!("  ok    {name} -> {}", dir.display()),
             Err(e) => {
-                eprintln!("error: could not start updf-api ({}): {e}", api_bin.display());
-                return ExitCode::FAILURE;
+                failures += 1;
+                eprintln!("  FAIL  {name}: {e}");
             }
-        };
+        }
+    }
 
-        let exited = tokio::select! {
-            status = child.wait() => Some(status),
-            _ = tokio::signal::ctrl_c() => None,
-        };
+    print_batch_summary(outcomes.len(), failures);
+    exit_code(failures == 0)
+}
 
-        match exited {
-            // Ctrl-C: shut the child down and stop supervising.
-            None => {
-                println!("\nshutting down updf-api ...");
-                let _ = child.kill().await;
-                let _ = child.wait().await;
-                return ExitCode::SUCCESS;
-            }
-            Some(status) => {
-                let ran = started.elapsed();
-                eprintln!("updf-api exited ({status:?}) after {ran:.1?}");
+// ---------------------------------------------------------------------------
+// ocr
+// ---------------------------------------------------------------------------
 
-                if ran < Duration::from_secs(5) {
-                    rapid_restarts += 1;
-                } else {
-                    rapid_restarts = 0;
-                }
-                if rapid_restarts > args.max_restarts {
-                    eprintln!(
-                        "giving up after {rapid_restarts} rapid restarts; \
-                         check the errors above"
-                    );
-                    return ExitCode::FAILURE;
-                }
+fn run_ocr_cmd(args: OcrArgs) -> ExitCode {
+    if !args.images_dir.is_dir() {
+        eprintln!("error: not a directory: {}", args.images_dir.display());
+        return ExitCode::from(2);
+    }
 
-                eprintln!(
-                    "restarting in 2s (rapid restart {rapid_restarts}/{}) ...",
-                    args.max_restarts
-                );
-                tokio::time::sleep(Duration::from_secs(2)).await;
-            }
+    let output = args
+        .output
+        .clone()
+        .unwrap_or_else(|| default_ocr_path(&args.images_dir));
+
+    let job = build_ocr_job(&args.images_dir, &args.ocr);
+    println!("OCR'ing images in {} ...", args.images_dir.display());
+
+    let markdown = match pipeline::run_ocr(&job) {
+        Ok(md) => md,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    match write_output(&output, &markdown) {
+        Ok(()) => {
+            println!("  ok    wrote {}", output.display());
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("error: could not write {}: {e}", output.display());
+            ExitCode::FAILURE
         }
     }
 }
 
 // ---------------------------------------------------------------------------
-// health — poll a running system remotely
+// correct
+// ---------------------------------------------------------------------------
+
+async fn run_correct_cmd(args: CorrectArgs) -> ExitCode {
+    let markdown = match std::fs::read_to_string(&args.input) {
+        Ok(md) => md,
+        Err(e) => {
+            eprintln!("error: could not read {}: {e}", args.input.display());
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let (api, target) = match build_correction(&args.correct) {
+        Ok(pair) => pair,
+        Err(code) => return code,
+    };
+
+    let output = args
+        .output
+        .clone()
+        .unwrap_or_else(|| default_corrected_path(&args.input));
+
+    println!("Correcting {} ...", args.input.display());
+    let outcome =
+        pipeline::correct_document(&api, &markdown, target.as_ref(), !args.correct.no_normalize)
+            .await;
+
+    if let Err(e) = write_output(&output, &outcome.markdown) {
+        eprintln!("error: could not write {}: {e}", output.display());
+        return ExitCode::FAILURE;
+    }
+    println!("  ok    wrote {}", output.display());
+
+    report_failures(&outcome.failures)
+}
+
+// ---------------------------------------------------------------------------
+// pipeline
+// ---------------------------------------------------------------------------
+
+async fn run_pipeline(args: PipelineArgs) -> ExitCode {
+    if let Some(code) = reject_inverted_range(args.first, args.last) {
+        return code;
+    }
+
+    // Fail fast on a missing/invalid key or target *before* doing any OCR work.
+    let correction = if args.correct {
+        match build_correction(&args.correct_opts) {
+            Ok(pair) => Some(pair),
+            Err(code) => return code,
+        }
+    } else {
+        None
+    };
+
+    let options = ConvertOptions {
+        device: args.device,
+        dpi: args.dpi,
+        first_page: args.first,
+        last_page: args.last,
+    };
+
+    println!(
+        "Pipeline {} -> {} (device: {}, {} dpi, correct: {})",
+        args.input.display(),
+        args.output.display(),
+        options.device.file_extension(),
+        options.dpi,
+        args.correct,
+    );
+
+    let outcomes = match convert_path(&args.input, &args.output, &options) {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let mut failures = 0;
+    for outcome in &outcomes {
+        let name = pdf_label(&outcome.pdf);
+        let dir = match &outcome.result {
+            Ok(dir) => dir,
+            Err(e) => {
+                failures += 1;
+                eprintln!("  FAIL  {name}: render: {e}");
+                continue;
+            }
+        };
+
+        match process_one(dir, &args.ocr, correction.as_ref()).await {
+            Ok(()) => println!("  ok    {name} -> {}", dir.display()),
+            Err(e) => {
+                failures += 1;
+                eprintln!("  FAIL  {name}: {e}");
+            }
+        }
+    }
+
+    print_batch_summary(outcomes.len(), failures);
+    exit_code(failures == 0)
+}
+
+/// Run the OCR (and optional correction) stages for one already-rendered PDF folder.
+async fn process_one(
+    dir: &Path,
+    ocr_opts: &OcrOptions,
+    correction: Option<&(CorrectionApi, Option<FormatTarget>)>,
+) -> Result<(), String> {
+    let stem = dir
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| "output directory has no name".to_string())?;
+
+    let job = build_ocr_job(dir, ocr_opts);
+    let ocr_md = pipeline::run_ocr(&job).map_err(|e| format!("ocr: {e}"))?;
+
+    let ocr_path = dir.join(format!("{stem}.ocr.md"));
+    write_output(&ocr_path, &ocr_md).map_err(|e| format!("write {}: {e}", ocr_path.display()))?;
+
+    if let Some((api, target)) = correction {
+        // The pipeline always runs the offline normalize pass before the agent.
+        let outcome = pipeline::correct_document(api, &ocr_md, target.as_ref(), true).await;
+        let md_path = dir.join(format!("{stem}.md"));
+        write_output(&md_path, &outcome.markdown)
+            .map_err(|e| format!("write {}: {e}", md_path.display()))?;
+        if !outcome.failures.is_empty() {
+            return Err(format!(
+                "{} page(s) failed correction (first: page {}: {})",
+                outcome.failures.len(),
+                outcome.failures[0].page,
+                outcome.failures[0].error,
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// serve — host the HTTP API in-process
+// ---------------------------------------------------------------------------
+
+async fn serve(args: ServeArgs) -> ExitCode {
+    let addr: SocketAddr = match args.addr.parse() {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("error: invalid --addr '{}': {e}", args.addr);
+            return ExitCode::from(2);
+        }
+    };
+
+    // Every endpoint spawns this same binary (honoring a UPDF_BIN override), so the
+    // server surfaces our own CLI rather than reimplementing any stage.
+    let config = server::Config {
+        addr,
+        updf_bin: server::resolve_updf_bin(),
+    };
+
+    println!("updf serve: HTTP surface over `{}`", config.updf_bin.display());
+    println!(
+        "listening on http://{} (try GET /health; press Ctrl-C to stop)",
+        config.addr
+    );
+
+    match server::serve(config).await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("error: server failed: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// health — poll a running server remotely
 // ---------------------------------------------------------------------------
 
 async fn health(args: HealthArgs) -> ExitCode {
@@ -184,7 +329,7 @@ async fn health(args: HealthArgs) -> ExitCode {
         Ok(r) => r,
         Err(e) => {
             eprintln!("error: could not reach {url}: {e}");
-            eprintln!("hint: is the system running? start it with `ultimate-pdf serve`");
+            eprintln!("hint: is the server running? start it with `updf serve`");
             return ExitCode::FAILURE;
         }
     };
@@ -205,6 +350,130 @@ async fn health(args: HealthArgs) -> ExitCode {
 
     let status_ok = body.get("status").and_then(|s| s.as_str()) == Some("ok");
     if http_ok && status_ok {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+// ---------------------------------------------------------------------------
+// shared helpers
+// ---------------------------------------------------------------------------
+
+/// Build an `OcrJob` for a directory of page images from the shared OCR options.
+fn build_ocr_job(images_dir: &Path, opts: &OcrOptions) -> OcrJob {
+    OcrJob::directory(images_dir)
+        .level(opts.level)
+        .languages(opts.languages.clone())
+        .use_language_correction(!opts.no_language_correction)
+        .min_confidence(opts.min_confidence)
+}
+
+/// Build a configured correction surface (and optional format target) from CLI options.
+/// On failure, prints the error and returns the exit code to propagate.
+fn build_correction(
+    opts: &CorrectOptions,
+) -> Result<(CorrectionApi, Option<FormatTarget>), ExitCode> {
+    let mut client = match ClaudeClient::from_env() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return Err(ExitCode::FAILURE);
+        }
+    };
+    if let Some(model) = &opts.model {
+        client = client.with_model(model.clone());
+    }
+
+    let target = match &opts.target {
+        Some(path) => match load_target(path) {
+            Ok(t) => Some(t),
+            Err(e) => {
+                eprintln!("error: {e}");
+                return Err(ExitCode::FAILURE);
+            }
+        },
+        None => None,
+    };
+
+    Ok((CorrectionApi::new(client), target))
+}
+
+/// Default OCR output: `<images_dir>/<dir-name>.ocr.md`.
+fn default_ocr_path(images_dir: &Path) -> PathBuf {
+    let name = images_dir
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("ocr");
+    images_dir.join(format!("{name}.ocr.md"))
+}
+
+/// Default corrected output: sibling `<stem>.md`, or `<stem>.corrected.md` if that
+/// would collide with the input file.
+fn default_corrected_path(input: &Path) -> PathBuf {
+    let name = input.file_name().and_then(|s| s.to_str()).unwrap_or("output");
+    let base = name
+        .strip_suffix(".ocr.md")
+        .or_else(|| name.strip_suffix(".md"))
+        .unwrap_or(name);
+    let candidate = input.with_file_name(format!("{base}.md"));
+    if candidate == input {
+        input.with_file_name(format!("{base}.corrected.md"))
+    } else {
+        candidate
+    }
+}
+
+/// Write `contents` to `path`, creating parent directories as needed.
+fn write_output(path: &Path, contents: &str) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    std::fs::write(path, contents)
+}
+
+/// Print per-page correction failures and return the appropriate exit code.
+fn report_failures(failures: &[pipeline::PageFailure]) -> ExitCode {
+    if failures.is_empty() {
+        return ExitCode::SUCCESS;
+    }
+    eprintln!("warning: {} page(s) could not be corrected:", failures.len());
+    for f in failures {
+        eprintln!("  page {}: {}", f.page, f.error);
+    }
+    ExitCode::FAILURE
+}
+
+fn pdf_label(pdf: &Path) -> String {
+    pdf.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| pdf.display().to_string())
+}
+
+fn reject_inverted_range(first: Option<u32>, last: Option<u32>) -> Option<ExitCode> {
+    if let (Some(first), Some(last)) = (first, last) {
+        if first > last {
+            eprintln!("error: --first ({first}) must not exceed --last ({last})");
+            return Some(ExitCode::from(2));
+        }
+    }
+    None
+}
+
+fn print_batch_summary(total: usize, failures: usize) {
+    println!(
+        "\nDone: {} ok, {} failed ({} pdf{} total)",
+        total - failures,
+        failures,
+        total,
+        if total == 1 { "" } else { "s" },
+    );
+}
+
+fn exit_code(ok: bool) -> ExitCode {
+    if ok {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
